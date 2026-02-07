@@ -3,13 +3,13 @@
 	"name": "companion-module-randomutility-middle8",
 	"shortname": "companion-module-randomutility-middle8",
 	"description": "Bitfocus Companion module to control RandomUtility Middle8 via UDP/TCP/OSC.",
-	"version": "0.0.0",
+	"version": "1.0.0",
 	"license": "MIT",
-	"repository": "git+https://github.com/YOUR_GITHUB/companion-module-randomutility-middle8.git",
-	"bugs": "https://github.com/YOUR_GITHUB/companion-module-randomutility-middle8/issues",
+	"repository": "git+https://github.com/randomutilitydotcom/companion-module-randomutility-middle8.git",
+	"bugs": "https://github.com/randomutilitydotcom/companion-module-randomutility-middle8/issues",
 	"maintainers": [
 		{
-			"name": "YOUR_NAME_HERE"
+			"name": "RandomUtility"
 		}
 	],
 	"legacyIds": [],
