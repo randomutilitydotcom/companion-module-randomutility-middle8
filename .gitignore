@@ -1,0 +1,6 @@
+node_modules
+dist
+pkg
+pkg.tgz
+.DS_Store
+DEBUG-PACKAGED
