@@ -1,6 +1,6 @@
 {
   "name": "-randomutility-middle8",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Bitfocus Companion module to control RandomUtility Middle8 via UDP/TCP/OSC.",
   "main": "dist/index.js",
   "type": "commonjs",
