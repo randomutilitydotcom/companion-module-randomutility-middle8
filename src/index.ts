@@ -1,12 +1,15 @@
-import { InstanceBase, InstanceStatus, runEntrypoint, type SomeCompanionConfigField } from '@companion-module/base'
+import { InstanceBase, InstanceStatus, runEntrypoint, type SomeCompanionConfigField, type CompanionBooleanFeedbackDefinition, type CompanionValueFeedbackDefinition, type CompanionVariableValues } from '@companion-module/base'
 import { getActionDefinitions } from './actions.js'
 import { getPresets } from './presets.js'
 import { withToken, cmdPresetFire, cmdPresetTrigger } from './commands.js'
 import { sendUdpText, sendTcpText, sendOscCmd, sendOscPresetFire, sendOscPresetTrigger } from './network.js'
 
+import { FIELDS, compare, variableId, type StatusRecords, type StatusValue } from './status.js'
+import { StatusReceiver, type StatusConfig } from './status-receiver.js'
+
 export type Transport = 'udp' | 'tcp' | 'osc'
 
-export interface Middle8Config {
+export interface Middle8Config extends StatusConfig {
   host: string
   transport: Transport
   udpPort: number
@@ -21,6 +24,11 @@ export interface Middle8Config {
 
 export class Middle8Instance extends InstanceBase<Middle8Config> {
   public config: Middle8Config
+  private _statusReceiver: StatusReceiver | null = null
+  private _statusTimer: ReturnType<typeof setInterval> | null = null
+  public _statusValues = new Map<string, { value: StatusValue; received: number }>()
+  private _statusFields = new Set(FIELDS)
+  public _lastStatus = 0
 
   constructor(internal: unknown) {
     super(internal)
@@ -41,16 +49,158 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
     this.updateStatus(InstanceStatus.Ok)
     this.setActionDefinitions(getActionDefinitions(this))
     this.setPresetDefinitions(getPresets(this))
+    await this._initStatus()
   }
 
   async configUpdated(config: Middle8Config): Promise<void> {
     this.config = config
-    this.updateStatus(InstanceStatus.Ok)
+    await this._initStatus()
   }
 
   async destroy(): Promise<void> {
-    // nothing persistent to close
+    await this._closeStatus()
   }
+
+  async _closeStatus() {
+    if (this._statusTimer) clearInterval(this._statusTimer)
+    this._statusTimer = null
+    if (this._statusReceiver) await this._statusReceiver.close()
+    this._statusReceiver = null
+  }
+
+  async _initStatus() {
+    await this._closeStatus()
+    this._statusValues.clear()
+    this._lastStatus = 0
+    this._defineStatus()
+    this.setVariableValues(Object.fromEntries([
+      ...[...this._statusFields].map((path) => [variableId(path), undefined]),
+      ['status_available', false],
+    ]))
+    this.checkFeedbacks()
+    if (!this.config.status_enabled) {
+      this.updateStatus(InstanceStatus.Ok, 'Commands ready; status reception disabled')
+      return
+    }
+    this.updateStatus(InstanceStatus.Connecting, 'Waiting for Middle8 status')
+    try {
+      this._statusReceiver = new StatusReceiver(this.config,
+        (records) => this._receiveStatus(records),
+        (error, fatal) => {
+          this.log(fatal ? 'error' : 'debug', `Status receiver: ${error.message}`)
+          if (fatal) {
+            this._statusValues.clear()
+            this._lastStatus = 0
+            this.setVariableValues(Object.fromEntries([
+              ...[...this._statusFields].map((path) => [variableId(path), undefined]),
+              ['status_available', false],
+            ]))
+            this.checkFeedbacks()
+            this.updateStatus(InstanceStatus.ConnectionFailure, `Status listener: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        },
+        () => this.log('info', 'Middle8 status listener ready'))
+      this._statusTimer = setInterval(() => this._expireStatus(), 250)
+    } catch (error) {
+      this.updateStatus(InstanceStatus.BadConfig, `Status listener: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  _defineStatus() {
+    this.setVariableDefinitions([
+      { variableId: 'status_available', name: 'Middle8 status available' },
+      ...[...this._statusFields].map((path) => ({ variableId: variableId(path), name: `Status: ${path}` })),
+    ])
+    const style = { bgcolor: 0x008000, color: 0xffffff }
+    const comparisonOptions: CompanionBooleanFeedbackDefinition['options'] = [
+      { type: 'dropdown', id: 'operator', label: 'Comparison', default: 'eq', choices: [
+        { id: 'eq', label: 'Equals' }, { id: 'ne', label: 'Does not equal' },
+        { id: 'contains', label: 'Contains' }, { id: 'not_contains', label: 'Does not contain' },
+        { id: 'gt', label: 'Greater than' }, { id: 'gte', label: 'Greater than or equal' },
+        { id: 'lt', label: 'Less than' }, { id: 'lte', label: 'Less than or equal' },
+      ] },
+      { type: 'textinput', id: 'value', label: 'Expected value (booleans: true/false)', default: 'true' },
+    ]
+    const definition = (path?: string): CompanionBooleanFeedbackDefinition => ({
+      type: 'boolean', name: `Status: ${path || 'Compare any field'}`, defaultStyle: style,
+      description: 'Compare a received status value. Missing or expired values return false.',
+      options: path ? comparisonOptions : [
+        { type: 'textinput', id: 'path', label: 'Status path (e.g. output/artnet_targets/0)', default: 'sources/a_receiving' },
+        ...comparisonOptions,
+      ],
+      callback: (event) => compare(this._statusValues.get(path || String(event.options.path)
+        .replace(/^\/middle8\/status\//, ''))?.value, event.options.operator, event.options.value),
+    })
+    const valueDefinition = (path?: string): CompanionValueFeedbackDefinition => ({
+      type: 'value', name: `Status value: ${path || 'Get any field'}`,
+      description: 'Returns the received value for a local variable, button text or expression. Missing or expired data returns null.',
+      options: path ? [] : [
+        { type: 'textinput', id: 'path', label: 'Status path', default: 'output/interface' },
+      ],
+      callback: (event) => this._statusValues.get(path || String(event.options.path)
+        .replace(/^\/middle8\/status\//, ''))?.value ?? null,
+    })
+    this.setFeedbackDefinitions({
+      status_available: { type: 'boolean', name: 'Status: Data available', defaultStyle: style,
+        options: [], callback: () => this._lastStatus > 0 },
+      status_compare: definition(),
+      status_value: valueDefinition(),
+      ...Object.fromEntries([...this._statusFields].map((path) => [variableId(path), definition(path)])),
+      ...Object.fromEntries([...this._statusFields].map((path) => [`value_${variableId(path)}`, valueDefinition(path)])),
+    })
+  }
+
+  _receiveStatus(records: StatusRecords) {
+    const now = Date.now()
+    const variables: CompanionVariableValues = { status_available: true }
+    let definitionsChanged = false
+    for (const [path, value] of records) {
+      if (!path) continue
+      // A new list (or empty-list marker) replaces its previous elements.
+      if (Array.isArray(value) || value === '-') {
+        for (const key of this._statusValues.keys()) {
+          if (key.startsWith(`${path}/`)) {
+            this._statusValues.delete(key)
+            variables[variableId(key)] = undefined
+          }
+        }
+      }
+      if (!this._statusFields.has(path)) {
+        this._statusFields.add(path)
+        definitionsChanged = true
+      }
+      this._statusValues.set(path, { value, received: now })
+      variables[variableId(path)] = value !== null && typeof value === 'object' ? JSON.stringify(value) : value === null ? '-' : value
+    }
+    if (definitionsChanged) this._defineStatus()
+    this._lastStatus = now
+    this.setVariableValues(variables)
+    this.checkFeedbacks()
+    this.updateStatus(InstanceStatus.Ok, 'Receiving Middle8 status')
+  }
+
+  _expireStatus() {
+    const timeout = Number(this.config.status_timeout ?? 5) * 1000
+    if (!timeout) return
+    const now = Date.now()
+    const variables: CompanionVariableValues = {}
+    for (const [path, record] of this._statusValues) {
+      if (now - record.received > timeout) {
+        this._statusValues.delete(path)
+        variables[variableId(path)] = undefined
+      }
+    }
+    if (this._lastStatus && now - this._lastStatus > timeout) {
+      this._lastStatus = 0
+      variables.status_available = false
+      this.updateStatus(InstanceStatus.Disconnected, 'Middle8 status expired')
+    }
+    if (Object.keys(variables).length) {
+      this.setVariableValues(variables)
+      this.checkFeedbacks()
+    }
+  }
+
 
   getConfigFields(): SomeCompanionConfigField[] {
     return [
@@ -121,6 +271,15 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
         width: 6,
         default: true,
       },
+      { type: 'checkbox', id: 'status_enabled', label: 'Receive Middle8 status', default: false, width: 12 },
+      { type: 'dropdown', id: 'status_transport', label: 'Status transport', default: 'udp', width: 4,
+        choices: [{ id: 'udp', label: 'UDP (JSON/raw)' }, { id: 'tcp', label: 'TCP (JSON/raw)' },
+          { id: 'osc', label: 'OSC over UDP' }] },
+      { type: 'number', id: 'status_port', label: 'Status listen port', default: 9010, min: 1, max: 65535, width: 4 },
+      { type: 'textinput', id: 'status_bind', label: 'Local status listen IP', default: '0.0.0.0', width: 4 },
+      { type: 'number', id: 'status_timeout', label: 'Status expiry (seconds; 0 = never)',
+        default: 5, min: 0, max: 3600, width: 6,
+        tooltip: 'Use 0 for change-only output. Periodic output should arrive faster than this timeout.' }
     ]
   }
 
@@ -148,7 +307,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
         await sendOscCmd({ host, port: this.config.oscPort }, command, token)
       }
 
-      this.updateStatus(InstanceStatus.Ok)
+      if (!this.config.status_enabled) this.updateStatus(InstanceStatus.Ok)
     } catch (e: any) {
       const msg = e instanceof Error ? e.message : String(e)
       this.updateStatus(InstanceStatus.ConnectionFailure, msg)
@@ -170,7 +329,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       } else {
         await this.sendTextCommand(cmdPresetFire(index))
       }
-      this.updateStatus(InstanceStatus.Ok)
+      if (!this.config.status_enabled) this.updateStatus(InstanceStatus.Ok)
     } catch (e: any) {
       const msg = e instanceof Error ? e.message : String(e)
       this.updateStatus(InstanceStatus.ConnectionFailure, msg)
@@ -193,7 +352,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       } else {
         await this.sendTextCommand(cmdPresetTrigger(v)) // UDP/TCP text command
       }
-      this.updateStatus(InstanceStatus.Ok)
+      if (!this.config.status_enabled) this.updateStatus(InstanceStatus.Ok)
     } catch (e: any) {
       const msg = e instanceof Error ? e.message : String(e)
       this.updateStatus(InstanceStatus.ConnectionFailure, msg)
