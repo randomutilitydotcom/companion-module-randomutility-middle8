@@ -128,6 +128,7 @@ test('TCP accepts connections, fragmented UTF-8 and multiple JSON/raw records', 
 function instanceUnderTest() {
   let Instance
   class Base {
+    saveConfig(values) { this.savedConfig = values }
     setVariableDefinitions(values) { this.variables = values }
     setVariableValues(values) { this.values = { ...this.values, ...values } }
     setFeedbackDefinitions(values) { this.feedbacks = values }

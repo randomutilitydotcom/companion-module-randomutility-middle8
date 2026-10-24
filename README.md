@@ -2,24 +2,39 @@
 
 Control RandomUtility Middle8 using UDP, TCP or OSC. Existing command actions and
 preset buttons remain available. Status fields are available as variables, value
-feedbacks and comparison feedbacks. Version 1.2.2 fixes saved-setting application and
-uses Companion's shared UDP feedback socket for multiple connections.
+feedbacks and comparison feedbacks. Version 1.2.3 fixes saved-setting application and
+uses Companion's shared UDP feedback socket for multiple connections. It also
+initializes and persists new config fields on upgraded connections so Companion
+5.1.1 can validate and save edited settings.
 
 Command transport and status transport are configured independently.
 
 ## Install or update in Companion 4.x
 
 1. Open **Modules**, click **Import module package**, and select
-   `companion-module-randomutility-middle8-1.2.2.tgz` without extracting it.
+   `companion-module-randomutility-middle8-1.2.3.tgz` without extracting it.
 2. For an existing Middle8 connection, open **Connections**, select it, click the
-   pencil beside the module version, select **1.2.2**, and save.
+   pencil beside the module version, select **1.2.3**, and save.
 3. For a new connection, search for **Middle8** in **Connections**, add it, and
-   select version **1.2.2**.
+   select version **1.2.3**.
 4. Configure the Middle8 command host and ports, then enable status reception as
    described below.
 
 The versioned archive is produced by the official Companion build tool and includes
 the manifest, bundled runtime and help. Run `yarn build` to regenerate it.
+
+## Upgrading existing connections
+
+Version 1.2.3 fixes the disabled Save button on upgraded connections in Companion
+5.1.1. Previous releases declared defaults for new protocol-specific feedback-port
+fields, but did not populate those fields in an already-saved config. Companion
+validates the actual stored values, including ports for inactive protocols.
+
+On module initialization, missing fields are now filled and saved automatically.
+Existing hosts, protocols, custom command/feedback ports, tokens and timeout
+settings are preserved. The original single feedback port is carried into the
+selected protocol if its new field is absent. Reopen the connection settings after
+selecting version 1.2.3 to load the completed configuration.
 
 ## Command connection settings
 
@@ -98,7 +113,7 @@ independent of the remote command destination. Changing the remote UDP/TCP/OSC
 command port changes where commands are sent. Changing the corresponding **Local
 feedback port** changes where status is received.
 
-When upgrading from 1.2.1 or earlier, select **1.2.2 on every Middle8 connection**.
+When upgrading from 1.2.1 or earlier, select **1.2.3 on every Middle8 connection**.
 Disable all older instances using the feedback port, then enable the updated
 connections (or restart Companion once after updating every connection). An older
 instance's dedicated socket cannot share a port with the new host-managed socket.

@@ -6,6 +6,7 @@ import { sendUdpText, sendTcpText, sendOscCmd, sendOscPresetFire, sendOscPresetT
 
 import { FIELDS, compare, variableId, type StatusRecords, type StatusValue } from './status.js'
 import { StatusReceiver, statusPort, type StatusConfig } from './status-receiver.js'
+import { normalizeConfig } from './config.js'
 
 export type Transport = 'udp' | 'tcp' | 'osc'
 
@@ -33,20 +34,21 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
 
   constructor(internal: unknown) {
     super(internal)
-    this.config = {
-      host: '127.0.0.1',
-      transport: 'udp',
-      udpPort: 9000,
-      tcpPort: 9001,
-      oscPort: 9002,
-      token: '',
-      includeTokenInOsc: false,
-      oscPresetUsesShortcut: true,
+    this.config = normalizeConfig({})
+  }
+
+  private _applyConfig(config: Middle8Config): void {
+    this.config = normalizeConfig(config)
+    const saved = config as unknown as Record<string, unknown>
+    if (Object.entries(this.config).some(([key, value]) => saved[key] !== value)) {
+      // Defaults on field definitions only affect new connections. Persist the
+      // migration so Companion's form validator sees actual values after upgrade.
+      this.saveConfig(this.config)
     }
   }
 
   async init(config: Middle8Config): Promise<void> {
-    this.config = { ...config }
+    this._applyConfig(config)
     this.updateStatus(InstanceStatus.Ok)
     this.setActionDefinitions(getActionDefinitions(this))
     this.setPresetDefinitions(getPresets(this))
@@ -54,9 +56,10 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
   }
 
   async configUpdated(config: Middle8Config): Promise<void> {
-    this.config = { ...config }
-    const commandPort = config.transport === 'tcp' ? config.tcpPort : config.transport === 'osc' ? config.oscPort : config.udpPort
-    this.log('info', `Applying saved config: commands ${config.transport} ${config.host}:${commandPort}; feedback ${config.status_transport || 'udp'} ${config.status_bind?.trim() || '0.0.0.0'}:${statusPort(config)}`)
+    this._applyConfig(config)
+    const current = this.config
+    const commandPort = current.transport === 'tcp' ? current.tcpPort : current.transport === 'osc' ? current.oscPort : current.udpPort
+    this.log('info', `Applying saved config: commands ${current.transport} ${current.host}:${commandPort}; feedback ${current.status_transport || 'udp'} ${current.status_bind?.trim() || '0.0.0.0'}:${statusPort(current)}`)
     await this._initStatus()
   }
 
