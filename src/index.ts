@@ -55,6 +55,8 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
 
   async configUpdated(config: Middle8Config): Promise<void> {
     this.config = { ...config }
+    const commandPort = config.transport === 'tcp' ? config.tcpPort : config.transport === 'osc' ? config.oscPort : config.udpPort
+    this.log('info', `Applying saved config: commands ${config.transport} ${config.host}:${commandPort}; feedback ${config.status_transport || 'udp'} ${config.status_bind?.trim() || '0.0.0.0'}:${statusPort(config)}`)
     await this._initStatus()
   }
 
@@ -90,8 +92,10 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
     }
     this.updateStatus(InstanceStatus.Connecting, 'Waiting for Middle8 status')
     try {
-      const endpoint = `${config.status_transport || 'udp'} ${config.status_bind || '0.0.0.0'}:${statusPort(config)}`
-      this.log('info', `Starting feedback listener on ${endpoint}; sender ${config.status_source_host || config.host || '*'}`)
+      const listenHost = config.status_bind?.trim() || '0.0.0.0'
+      const shared = config.status_transport !== 'tcp' && listenHost === '0.0.0.0'
+      const endpoint = `${config.status_transport || 'udp'} ${listenHost}:${statusPort(config)}`
+      this.log('info', `Starting ${shared ? 'shared ' : ''}feedback listener on ${endpoint}; sender ${config.status_source_host || config.host || '*'}`)
       const receiver = new StatusReceiver(config,
         (records) => { if (generation === this._statusGeneration) this._receiveStatus(records) },
         (error, fatal) => {
@@ -105,10 +109,13 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
               ['status_available', false],
             ]))
             this.checkFeedbacks()
-            this.updateStatus(InstanceStatus.ConnectionFailure, `Feedback listener ${endpoint}: ${error.message}`)
+            const detail = shared && error.message.includes('EADDRINUSE') ?
+              `${error.message}. Stop older module instances or other applications holding this port, or select another feedback port.` : error.message
+            this.updateStatus(InstanceStatus.ConnectionFailure, `Feedback listener ${endpoint}: ${detail}`)
           }
         },
-        () => { if (generation === this._statusGeneration) this.log('info', `Feedback listener ready on ${endpoint}`) })
+        () => { if (generation === this._statusGeneration) this.log('info', `${shared ? 'Shared feedback' : 'Feedback'} listener ready on ${endpoint}`) },
+        () => this.createSharedUdpSocket('udp4'))
       this._statusReceiver = receiver
       const ready = await receiver.ready
       if (!ready || generation !== this._statusGeneration) return
@@ -285,6 +292,8 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
         default: true,
       },
       { type: 'checkbox', id: 'status_enabled', label: 'Receive Middle8 status', default: false, width: 12 },
+      { type: 'static-text', id: 'feedback_help', label: 'Incoming feedback', width: 12,
+        value: 'Remote command ports above belong to Middle8. Feedback ports below belong to Companion. UDP/OSC connections can share a feedback port when the local listen IP is 0.0.0.0; each connection selects its Middle8 sender by Host/IP.' },
       { type: 'dropdown', id: 'status_transport', label: 'Feedback protocol', default: 'udp', width: 4,
         choices: [{ id: 'udp', label: 'UDP (JSON/raw)' }, { id: 'tcp', label: 'TCP (JSON/raw)' },
           { id: 'osc', label: 'OSC over UDP' }] },
@@ -293,7 +302,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
         default: this.config[`status_${protocol}_port`] ??
           ((this.config.status_transport || 'udp') === protocol ? this.config.status_port : undefined) ?? (9010 + index),
         min: 1, max: 65535, width: 4,
-        tooltip: 'A port on the Companion computer. Give each connection its own feedback port and match it in Middle8 Status Output.',
+        tooltip: 'A port on the Companion computer. UDP/OSC can share a port across instances when listen IP is 0.0.0.0. TCP requires a separate port. Match this port in Middle8 Status Output.',
       })),
       { type: 'textinput', id: 'status_bind', label: 'Companion local listen IP', default: '0.0.0.0', width: 6,
         tooltip: 'An IP belonging to the Companion computer, or 0.0.0.0 for all its IPv4 interfaces. Do not enter the remote Middle8 IP.' },

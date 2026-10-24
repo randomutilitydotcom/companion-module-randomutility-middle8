@@ -2,19 +2,19 @@
 
 Control RandomUtility Middle8 using UDP, TCP or OSC. Existing command actions and
 preset buttons remain available. Status fields are available as variables, value
-feedbacks and comparison feedbacks. Version 1.2.1 fixes saved-setting application and
-OSC bind conflicts for multiple connections.
+feedbacks and comparison feedbacks. Version 1.2.2 fixes saved-setting application and
+uses Companion's shared UDP feedback socket for multiple connections.
 
 Command transport and status transport are configured independently.
 
 ## Install or update in Companion 4.x
 
 1. Open **Modules**, click **Import module package**, and select
-   `companion-module-randomutility-middle8-1.2.1.tgz` without extracting it.
+   `companion-module-randomutility-middle8-1.2.2.tgz` without extracting it.
 2. For an existing Middle8 connection, open **Connections**, select it, click the
-   pencil beside the module version, select **1.2.1**, and save.
+   pencil beside the module version, select **1.2.2**, and save.
 3. For a new connection, search for **Middle8** in **Connections**, add it, and
-   select version **1.2.1**.
+   select version **1.2.2**.
 4. Configure the Middle8 command host and ports, then enable status reception as
    described below.
 
@@ -68,14 +68,18 @@ the manifest, bundled runtime and help. Run `yarn build` to regenerate it.
 JSON and raw strings are detected automatically for UDP/TCP. TCP records are
 newline-delimited. OSC uses `/middle8/status/...` addresses over UDP; OSC over TCP
 is not emitted by Middle8. Each module connection listens to one status transport.
-Use a separate local feedback port for each connection or other application.
-UDP feedback and OSC feedback both use UDP sockets.
+With **Companion local listen IP** set to `0.0.0.0`, UDP and OSC feedback use
+Companion's shared socket API. Multiple connections can use the same incoming
+port; each connection only accepts its configured Middle8 sender. TCP feedback
+and listeners bound to a specific local IP use dedicated sockets.
 
 ## Multiple Middle8 computers
 
 Remote command ports belong to each Middle8 computer. They can be identical when
 those computers have different IPs. Local feedback ports belong to the Companion
-computer, so give each active connection a distinct feedback listen port.
+computer. UDP/OSC connections can share a feedback port when the local listen IP
+is `0.0.0.0`. Each connection selects packets by the configured Middle8 host/IP.
+TCP connections need different local feedback ports.
 
 For example, if Companion is `10.0.0.100`:
 
@@ -85,17 +89,29 @@ For example, if Companion is `10.0.0.100`:
 | Command protocol | UDP | UDP |
 | Remote UDP command port | `9000` | `9000` |
 | Feedback protocol | UDP | UDP |
-| Local UDP feedback port | `9010` | `9110` |
+| Local UDP feedback port | `9010` | `9010` |
 | Companion local listen IP | `0.0.0.0` | `0.0.0.0` |
-| Middle8 status-output destination | `10.0.0.100:9010` | `10.0.0.100:9110` |
+| Middle8 status-output destination | `10.0.0.100:9010` | `10.0.0.100:9010` |
 
-Saving config closes the old listener and applies the latest settings. Bind errors
+The `0.0.0.0:9010` endpoint in logs is an **incoming feedback listener**; it is
+independent of the remote command destination. Changing the remote UDP/TCP/OSC
+command port changes where commands are sent. Changing the corresponding **Local
+feedback port** changes where status is received.
+
+When upgrading from 1.2.1 or earlier, select **1.2.2 on every Middle8 connection**.
+Disable all older instances using the feedback port, then enable the updated
+connections (or restart Companion once after updating every connection). An older
+instance's dedicated socket cannot share a port with the new host-managed socket.
+Other applications using the same port also need to release it.
+
+Saving config closes the old listener subscription and applies the latest settings. Bind errors
 include the actual local endpoint in connection status and logs. If a local port is
 already occupied, choose another port and save; a Companion restart is not required.
 
 Feedback is accepted only from the configured Middle8 host by default. If Middle8
 publishes through a different interface, enter that source IP in **Feedback sender
-Host/IP**. Use `*` to accept any sender. This filter updates when settings are saved.
+Host/IP**. Use `*` to accept any sender; on a shared port this receives every host publishing
+to that port. This filter updates when settings are saved.
 OSC commands use an OS-assigned source port, allowing concurrent module instances
 without competing for a fixed local port.
 
@@ -197,5 +213,9 @@ Middle8 OSC null values arrive as the string `None`.
 
 Run `yarn install --frozen-lockfile` and `yarn test`. Run `yarn build` to compile TypeScript and package the module. Tests cover JSON/raw/OSC parsing, OSC bundles,
 comparisons, actual UDP/TCP reception, TCP fragmentation, feedback registration,
-per-field expiry, recovery and configuration reset. A live Companion UI and
-Middle8 application session are required to verify the complete operator workflow.
+per-field expiry, recovery and configuration reset. The IPC integration test starts separate real module processes, exercises the
+actual module/base shared-socket implementation, receives UDP on a host broker,
+checks peer filtering, saves new ports/protocols and restarts from saved config.
+It can also run against the bundled `pkg/main.js` by setting
+`MIDDLE8_TEST_ENTRYPOINT` to its absolute path. A live Companion UI and Middle8
+application session are still required to verify the complete operator workflow.

@@ -1,7 +1,10 @@
 import * as dgram from 'dgram'
 import * as net from 'net'
 import { StringDecoder } from 'string_decoder'
+import { EventEmitter } from 'events'
 import { lookup } from 'dns/promises'
+import type { SharedUdpSocket } from '@companion-module/base'
+import { SharedFeedbackSocket } from './shared-feedback-socket.js'
 import { parseOSC, parseText, type StatusRecords } from './status.js'
 
 export interface StatusConfig {
@@ -24,14 +27,15 @@ export function statusPort(config: StatusConfig): number {
 }
 
 export class StatusReceiver {
-  public socket: net.Server | dgram.Socket
+  public socket: net.Server | dgram.Socket | SharedFeedbackSocket
   private clients: Set<net.Socket>
   private closed = false
   public ready: Promise<boolean>
   private closePromise?: Promise<void>
 
   constructor(config: StatusConfig, onRecords: (records: StatusRecords) => void,
-    onError: (error: Error, fatal: boolean) => void, onReady: () => void) {
+    onError: (error: Error, fatal: boolean) => void, onReady: () => void,
+    createSharedSocket?: () => SharedUdpSocket) {
     this.clients = new Set()
     const transport = config.status_transport || 'udp'
     const port = statusPort(config)
@@ -71,15 +75,20 @@ export class StatusReceiver {
         client.on('close', () => this.clients.delete(client))
       })
     } else {
-      this.socket = dgram.createSocket('udp4')
-      this.socket.on('message', (packet, peer) => {
+      // Companion owns the shared socket across module processes. Every subscriber
+      // gets the datagram; each instance's source filter selects its Middle8 host.
+      // The shared API always listens on all interfaces, so explicit local IPs
+      // continue to use a dedicated socket.
+      this.socket = host === '0.0.0.0' && createSharedSocket ? new SharedFeedbackSocket(createSharedSocket()) : dgram.createSocket('udp4')
+      this.socket.on('message', (packet: Buffer, peer: dgram.RemoteInfo) => {
         if (!sourceAddresses || sourceAddresses.has(peer.address)) parse(packet)
       })
     }
     let complete: (value: boolean) => void = () => undefined
     const socket = this.socket
+    const events: EventEmitter = socket
     this.ready = new Promise<boolean>((resolve) => { complete = resolve })
-    this.socket.on('error', (error) => {
+    events.on('error', (error: Error) => {
       complete(false)
       if (!this.closed) onError(error, true)
     })
@@ -97,8 +106,8 @@ export class StatusReceiver {
           complete(true)
           if (!this.closed) onReady()
         }
-        if (socket instanceof dgram.Socket) socket.bind(port, host, onListening)
-        else socket.listen(port, host, onListening)
+        if (socket instanceof net.Server) socket.listen(port, host, onListening)
+        else socket.bind(port, host, onListening)
       } catch (error) {
         complete(false)
         if (!this.closed) onError(error instanceof Error ? error : new Error(String(error)), true)
@@ -113,7 +122,15 @@ export class StatusReceiver {
     this.closePromise = (async () => {
       await this.ready
       await new Promise<void>((resolve) => {
-        try { this.socket.close(() => resolve()) } catch (_) { resolve() }
+        const events: EventEmitter = this.socket
+        const finished = () => {
+          events.removeListener('close', finished)
+          events.removeListener('error', finished)
+          resolve()
+        }
+        events.once('close', finished)
+        events.once('error', finished)
+        try { this.socket.close(finished) } catch (_) { finished() }
       })
     })()
     return this.closePromise
