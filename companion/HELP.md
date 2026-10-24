@@ -2,21 +2,21 @@
 
 Control RandomUtility Middle8 using UDP, TCP or OSC. Existing command actions and
 preset buttons remain available. Status fields are available as variables, value
-feedbacks and comparison feedbacks. Version 1.2.3 fixes saved-setting application and
+feedbacks and comparison feedbacks. Version 1.2.4 fixes saved-setting application and
 uses Companion's shared UDP feedback socket for multiple connections. It also
 initializes and persists new config fields on upgraded connections so Companion
 5.1.1 can validate and save edited settings.
 
 Command transport and status transport are configured independently.
 
-## Install or update in Companion 4.x
+## Install or update in Companion 4.x / 5.x
 
 1. Open **Modules**, click **Import module package**, and select
-   `companion-module-randomutility-middle8-1.2.3.tgz` without extracting it.
+   `companion-module-randomutility-middle8-1.2.4.tgz` without extracting it.
 2. For an existing Middle8 connection, open **Connections**, select it, click the
-   pencil beside the module version, select **1.2.3**, and save.
+   pencil beside the module version, select **1.2.4**, and save.
 3. For a new connection, search for **Middle8** in **Connections**, add it, and
-   select version **1.2.3**.
+   select version **1.2.4**.
 4. Configure the Middle8 command host and ports, then enable status reception as
    described below.
 
@@ -25,7 +25,7 @@ the manifest, bundled runtime and help. Run `yarn build` to regenerate it.
 
 ## Upgrading existing connections
 
-Version 1.2.3 fixes the disabled Save button on upgraded connections in Companion
+Version 1.2.4 fixes the disabled Save button on upgraded connections in Companion
 5.1.1. Previous releases declared defaults for new protocol-specific feedback-port
 fields, but did not populate those fields in an already-saved config. Companion
 validates the actual stored values, including ports for inactive protocols.
@@ -34,7 +34,7 @@ On module initialization, missing fields are now filled and saved automatically.
 Existing hosts, protocols, custom command/feedback ports, tokens and timeout
 settings are preserved. The original single feedback port is carried into the
 selected protocol if its new field is absent. Reopen the connection settings after
-selecting version 1.2.3 to load the completed configuration.
+selecting version 1.2.4 to load the completed configuration.
 
 ## Command connection settings
 
@@ -113,7 +113,7 @@ independent of the remote command destination. Changing the remote UDP/TCP/OSC
 command port changes where commands are sent. Changing the corresponding **Local
 feedback port** changes where status is received.
 
-When upgrading from 1.2.1 or earlier, select **1.2.3 on every Middle8 connection**.
+When upgrading from 1.2.1 or earlier, select **1.2.4 on every Middle8 connection**.
 Disable all older instances using the feedback port, then enable the updated
 connections (or restart Companion once after updating every connection). An older
 instance's dedicated socket cannot share a port with the new host-managed socket.
@@ -171,9 +171,28 @@ variables expose lists as JSON text, while value feedbacks preserve lists as arr
 Raw transport sends numbers as strings, which can be converted in expressions.
 Comparison feedbacks remain available for color rules and trigger conditions.
 
+## Source A and Source B feedbacks
+
+Both sources provide the same seven status fields: receiving, protocol, name,
+selection, sender IP, Art-Net any sender and sACN priority. Their comparison
+feedbacks expose the same eight operators and the same Inverted option.
+
+For one consistent editor, select **Sources: Compare status (A/B)**, choose
+**Source A** or **Source B**, select the field, then set the comparison and value.
+For example: Source B / Receiving / Equals / `true`.
+
+Individual feedbacks are named **Status comparison: Source A: Receiving** and
+**Status comparison: Source B: Receiving**, with matching names for every other
+source field. These are boolean conditions for styles and triggers.
+
+**Status value: Source A: Receiving**, **Status value: Source B: Receiving**, and
+**Sources: Get status value (A/B)** return the received value for variables, text
+and expressions. Value feedbacks have no comparison operator by design.
+Existing feedback IDs and variable names are unchanged.
+
 ## Use status as conditions
 
-Select any **Status: ...** feedback on a Companion button or as a boolean feedback
+Select any **Status comparison: ...** feedback on a Companion button or as a boolean feedback
 condition in a trigger. Every field in Middle8's shared status has a feedback,
 including source signal, network interfaces, output health/rate, session role and
 panic, last preset, DMX control, show, version, timestamp and universe count.
@@ -182,14 +201,14 @@ Examples:
 
 | Feedback | Comparison | Expected value |
 | --- | --- | --- |
-| Status: sources/a_receiving | Equals | `true` |
-| Status: sources/b_receiving | Equals | `false` |
-| Status: output/working | Equals | `true` |
-| Status: session/role | Equals | `Master` |
-| Status: session/panic | Equals | `true` |
-| Status: preset/index | Equals | `3` |
-| Status: control/value | Greater than or equal | `128` |
-| Status: universes | Greater than | `0` |
+| Status comparison: Source A: Receiving | Equals | `true` |
+| Status comparison: Source B: Receiving | Equals | `false` |
+| Status comparison: output/working | Equals | `true` |
+| Status comparison: session/role | Equals | `Master` |
+| Status comparison: session/panic | Equals | `true` |
+| Status comparison: preset/index | Equals | `3` |
+| Status comparison: control/value | Greater than or equal | `128` |
+| Status comparison: universes | Greater than | `0` |
 
 Equality and substring comparisons are case-sensitive. Numeric comparisons require
 numeric values. Booleans use `true`/`false`. **Status: Data available** reports
@@ -198,7 +217,7 @@ independently, so continued updates to other fields cannot keep an old value ali
 Missing or expired fields return false for all comparisons (before Companion's
 optional Inverted setting). They are also cleared from variables.
 
-**Status: Compare any field** accepts paths such as `output/artnet_targets/0`, or
+**Status comparison: Compare any field** accepts paths such as `output/artnet_targets/0`, or
 the full `/middle8/status/output/artnet_targets/0` address. New received fields and
 list indices also receive individual feedbacks and variable definitions.
 JSON exposes `output/artnet_targets` as a JSON array as well as its indexed paths.

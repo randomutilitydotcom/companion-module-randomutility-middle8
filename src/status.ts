@@ -3,11 +3,27 @@ export type StatusRecords = Map<string, StatusValue>
 
 const PREFIX = '/middle8/status/'
 
+export const SOURCE_FIELDS = [
+  { id: 'receiving', label: 'Receiving' },
+  { id: 'protocol', label: 'Protocol' },
+  { id: 'name', label: 'Name' },
+  { id: 'selection', label: 'Selection' },
+  { id: 'sender_ip', label: 'Sender IP' },
+  { id: 'artnet_any', label: 'Art-Net any sender' },
+  { id: 'sacn_priority', label: 'sACN priority' },
+]
+
+export function statusLabel(path: string): string {
+  const source = path.match(/^sources\/([ab])_(.+)$/)
+  if (!source) return path
+  const field = SOURCE_FIELDS.find((field) => field.id === source[2])
+  return `Source ${source[1].toUpperCase()}: ${field?.label || source[2]}`
+}
+
 // Keep these paths aligned with MainWindow._build_shared_status in main.py.
 export const FIELDS = [
   'timestamp', 'version', 'show', 'sources/input_interface', 'sources/input_interface_id',
-  ...['a', 'b'].flatMap((source) => ['receiving', 'protocol', 'name', 'selection', 'sender_ip',
-    'artnet_any', 'sacn_priority'].map((key) => `sources/${source}_${key}`)),
+  ...['a', 'b'].flatMap((source) => SOURCE_FIELDS.map((field) => `sources/${source}_${field.id}`)),
   ...['enabled', 'working', 'interface', 'interface_id', 'rate_hz', 'packets', 'artnet_targets']
     .map((key) => `output/${key}`),
   'session/enabled', 'session/role', 'session/panic', 'preset/name', 'preset/index',

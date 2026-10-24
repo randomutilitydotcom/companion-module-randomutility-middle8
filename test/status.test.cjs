@@ -228,6 +228,55 @@ test('value feedbacks and variables expose received names and typed values, then
   await instance.destroy()
 })
 
+test('all Source A/B feedback pairs have identical comparison options and behavior', async () => {
+  const { SOURCE_FIELDS } = require('../dist/status.js')
+  const instance = instanceUnderTest()
+  await instance.init({ status_enabled: false })
+  const samples = { receiving: true, protocol: 'sACN', name: 'Desk', selection: 'Priority 100',
+    sender_ip: '192.0.2.10', artnet_any: false, sacn_priority: 100 }
+  instance._receiveStatus(parseText(JSON.stringify({ sources: Object.fromEntries(
+    ['a', 'b'].flatMap((source) => Object.entries(samples).map(([key, value]) => [`${source}_${key}`, value])),
+  ) })))
+  for (const { id, label } of SOURCE_FIELDS) {
+    const a = instance.feedbacks[`status_sources_a_${id}`]
+    const b = instance.feedbacks[`status_sources_b_${id}`]
+    assert.equal(a.type, 'boolean', id)
+    assert.equal(b.type, 'boolean', id)
+    assert.equal(a.showInvert, true, id)
+    assert.equal(b.showInvert, true, id)
+    assert.deepEqual(a.options, b.options, id)
+    assert.notEqual(a.options, b.options, id)
+    assert.notEqual(a.options[0].choices, b.options[0].choices, id)
+    assert.equal(a.name, `Status comparison: Source A: ${label}`)
+    assert.equal(b.name, `Status comparison: Source B: ${label}`)
+    for (const { id: operator } of a.options[0].choices) {
+      const options = { operator, value: String(samples[id]) }
+      assert.equal(a.callback({ options }), b.callback({ options }), `${id}/${operator}`)
+    }
+    const expected = { options: { operator: 'eq', value: String(samples[id]) } }
+    assert.equal(a.callback(expected), true, id)
+    assert.equal(b.callback(expected), true, id)
+    assert.equal(instance.feedbacks[`value_status_sources_a_${id}`].callback({ options: {} }), samples[id])
+    assert.equal(instance.feedbacks[`value_status_sources_b_${id}`].callback({ options: {} }), samples[id])
+  }
+  const selectors = instance.feedbacks.source_status_compare.options
+  assert.deepEqual(Array.from(selectors[0].choices, (choice) => choice.id), ['a', 'b'])
+  assert.deepEqual(Array.from(selectors[1].choices, (choice) => choice.id), SOURCE_FIELDS.map((field) => field.id))
+  instance._receiveStatus(parseText('{"sources":{"b_receiving":false}}'))
+  const comparison = { options: { operator: 'eq', value: 'true' } }
+  assert.equal(instance.feedbacks.status_sources_a_receiving.callback(comparison), true)
+  assert.equal(instance.feedbacks.status_sources_b_receiving.callback(comparison), false)
+  assert.equal(instance.feedbacks.source_status_compare.callback({ options: {
+    source: 'b', field: 'receiving', operator: 'eq', value: 'false' } }), true)
+  assert.equal(instance.feedbacks.source_status_value.callback({ options: { source: 'b', field: 'receiving' } }), false)
+  instance._statusValues.get('sources/b_receiving').received -= 10000
+  instance._expireStatus()
+  assert.equal(instance.feedbacks.status_sources_a_receiving.callback(comparison), true)
+  assert.equal(instance.feedbacks.status_sources_b_receiving.callback(comparison), false)
+  assert.equal(instance.feedbacks.value_status_sources_b_receiving.callback({ options: {} }), null)
+  await instance.destroy()
+})
+
 test('existing UDP commands retain tokens and do not report silent status reception healthy', { timeout: 5000 }, async (t) => {
   const commandReceiver = dgram.createSocket('udp4')
   commandReceiver.bind(0, '127.0.0.1')

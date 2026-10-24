@@ -69,7 +69,7 @@ function startModule(id, broker) {
     env: { ...process.env, MODULE_MANIFEST: manifest, CONNECTION_ID: id, VERIFICATION_TOKEN: 'integration-test' },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   })
-  const host = { id, child, events: new EventEmitter(), variables: {}, logs: [], statuses: [] }
+  const host = { id, child, events: new EventEmitter(), variables: {}, feedbackValues: {}, feedbackDefinitions: [], logs: [], statuses: [] }
   child.stdout.on('data', (data) => host.logs.push(data.toString()))
   child.stderr.on('data', (data) => host.logs.push(data.toString()))
   let registerId
@@ -90,8 +90,11 @@ function startModule(id, broker) {
     'set-status': async (state) => host.statuses.push(state),
     setActionDefinitions: ignore,
     setPresetDefinitions: ignore,
-    setFeedbackDefinitions: ignore,
-    updateFeedbackValues: ignore,
+    setFeedbackDefinitions: async ({ feedbacks }) => { host.feedbackDefinitions = feedbacks },
+    updateFeedbackValues: async ({ values }) => {
+      for (const value of values) host.feedbackValues[value.id] = value.value
+      host.events.emit('feedbacks')
+    },
     setVariableDefinitions: async (message) => updateVariables(message),
     setVariableValues: async (message) => updateVariables(message),
     saveConfig: async (message) => { host.savedConfig = message.config },
@@ -113,21 +116,23 @@ function startModule(id, broker) {
       lastUpgradeIndex: -1, actions: {}, feedbacks: {} })
   }
   host.save = (config) => host.call('updateConfigAndLabel', { label: id, config, secrets: {} })
-  host.waitForValue = (key, expected) => new Promise((resolve, reject) => {
+  const waitForUpdate = (collection, event, key, expected) => new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      host.events.removeListener('variables', check)
+      host.events.removeListener(event, check)
       reject(new Error(`${id}: no ${key}=${expected}; logs: ${host.logs.join('\n')}`))
     }, 5000)
     const check = () => {
-      if (host.variables[key] === expected) {
+      if (collection[key] === expected) {
         clearTimeout(timeout)
-        host.events.removeListener('variables', check)
+        host.events.removeListener(event, check)
         resolve()
       }
     }
-    host.events.on('variables', check)
+    host.events.on(event, check)
     check()
   })
+  host.waitForValue = (key, expected) => waitForUpdate(host.variables, 'variables', key, expected)
+  host.waitForFeedback = (key, expected) => waitForUpdate(host.feedbackValues, 'feedbacks', key, expected)
   host.close = async () => {
     if (child.exitCode !== null || child.signalCode !== null) return
     try { await host.call('destroy', {}) } catch (_) {}

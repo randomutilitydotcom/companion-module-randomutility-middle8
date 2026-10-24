@@ -4,7 +4,7 @@ import { getPresets } from './presets.js'
 import { withToken, cmdPresetFire, cmdPresetTrigger } from './commands.js'
 import { sendUdpText, sendTcpText, sendOscCmd, sendOscPresetFire, sendOscPresetTrigger } from './network.js'
 
-import { FIELDS, compare, variableId, type StatusRecords, type StatusValue } from './status.js'
+import { FIELDS, SOURCE_FIELDS, statusLabel, compare, variableId, type StatusRecords, type StatusValue } from './status.js'
 import { StatusReceiver, statusPort, type StatusConfig } from './status-receiver.js'
 import { normalizeConfig } from './config.js'
 
@@ -135,7 +135,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       ...[...this._statusFields].map((path) => ({ variableId: variableId(path), name: `Status: ${path}` })),
     ])
     const style = { bgcolor: 0x008000, color: 0xffffff }
-    const comparisonOptions: CompanionBooleanFeedbackDefinition['options'] = [
+    const comparisonOptions = (): CompanionBooleanFeedbackDefinition['options'] => [
       { type: 'dropdown', id: 'operator', label: 'Comparison', default: 'eq', choices: [
         { id: 'eq', label: 'Equals' }, { id: 'ne', label: 'Does not equal' },
         { id: 'contains', label: 'Contains' }, { id: 'not_contains', label: 'Does not contain' },
@@ -145,17 +145,18 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       { type: 'textinput', id: 'value', label: 'Expected value (booleans: true/false)', default: 'true' },
     ]
     const definition = (path?: string): CompanionBooleanFeedbackDefinition => ({
-      type: 'boolean', name: `Status: ${path || 'Compare any field'}`, defaultStyle: style,
-      description: 'Compare a received status value. Missing or expired values return false.',
-      options: path ? comparisonOptions : [
+      type: 'boolean', name: `Status comparison: ${path ? statusLabel(path) : 'Compare any field'}`, defaultStyle: { ...style },
+      showInvert: true,
+      description: 'Boolean condition: compare a received status value. Missing or expired values return false.',
+      options: path ? comparisonOptions() : [
         { type: 'textinput', id: 'path', label: 'Status path (e.g. output/artnet_targets/0)', default: 'sources/a_receiving' },
-        ...comparisonOptions,
+        ...comparisonOptions(),
       ],
       callback: (event) => compare(this._statusValues.get(path || String(event.options.path)
         .replace(/^\/middle8\/status\//, ''))?.value, event.options.operator, event.options.value),
     })
     const valueDefinition = (path?: string): CompanionValueFeedbackDefinition => ({
-      type: 'value', name: `Status value: ${path || 'Get any field'}`,
+      type: 'value', name: `Status value: ${path ? statusLabel(path) : 'Get any field'}`,
       description: 'Returns the received value for a local variable, button text or expression. Missing or expired data returns null.',
       options: path ? [] : [
         { type: 'textinput', id: 'path', label: 'Status path', default: 'output/interface' },
@@ -163,11 +164,32 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       callback: (event) => this._statusValues.get(path || String(event.options.path)
         .replace(/^\/middle8\/status\//, ''))?.value ?? null,
     })
+    const sourceOptions = (): CompanionBooleanFeedbackDefinition['options'] => [
+      { type: 'dropdown', id: 'source', label: 'Source', default: 'a', choices: [
+        { id: 'a', label: 'Source A' }, { id: 'b', label: 'Source B' },
+      ] },
+      { type: 'dropdown', id: 'field', label: 'Status field', default: 'receiving', choices: SOURCE_FIELDS.map((field) => ({ ...field })) },
+    ]
+    const sourcePath = (options: { source?: unknown; field?: unknown }) =>
+      `sources/${String(options.source || 'a').toLowerCase()}_${String(options.field || 'receiving')}`
     this.setFeedbackDefinitions({
       status_available: { type: 'boolean', name: 'Status: Data available', defaultStyle: style,
         options: [], callback: () => this._lastStatus > 0 },
       status_compare: definition(),
       status_value: valueDefinition(),
+      source_status_compare: {
+        type: 'boolean', name: 'Sources: Compare status (A/B)', defaultStyle: { ...style }, showInvert: true,
+        description: 'Identical comparison controls and logic for either source. Select Source A or Source B.',
+        options: [...sourceOptions(), ...comparisonOptions()],
+        callback: (event) => compare(this._statusValues.get(sourcePath(event.options))?.value,
+          event.options.operator, event.options.value),
+      },
+      source_status_value: {
+        type: 'value', name: 'Sources: Get status value (A/B)',
+        description: 'Return the selected source value for text, variables or expressions.',
+        options: sourceOptions(),
+        callback: (event) => this._statusValues.get(sourcePath(event.options))?.value ?? null,
+      },
       ...Object.fromEntries([...this._statusFields].map((path) => [variableId(path), definition(path)])),
       ...Object.fromEntries([...this._statusFields].map((path) => [`value_${variableId(path)}`, valueDefinition(path)])),
     })
