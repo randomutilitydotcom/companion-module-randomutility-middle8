@@ -5,7 +5,7 @@ import { withToken, cmdPresetFire, cmdPresetTrigger } from './commands.js'
 import { sendUdpText, sendTcpText, sendOscCmd, sendOscPresetFire, sendOscPresetTrigger } from './network.js'
 
 import { FIELDS, compare, variableId, type StatusRecords, type StatusValue } from './status.js'
-import { StatusReceiver, type StatusConfig } from './status-receiver.js'
+import { StatusReceiver, statusPort, type StatusConfig } from './status-receiver.js'
 
 export type Transport = 'udp' | 'tcp' | 'osc'
 
@@ -29,6 +29,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
   public _statusValues = new Map<string, { value: StatusValue; received: number }>()
   private _statusFields = new Set(FIELDS)
   public _lastStatus = 0
+  private _statusGeneration = 0
 
   constructor(internal: unknown) {
     super(internal)
@@ -45,7 +46,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
   }
 
   async init(config: Middle8Config): Promise<void> {
-    this.config = config
+    this.config = { ...config }
     this.updateStatus(InstanceStatus.Ok)
     this.setActionDefinitions(getActionDefinitions(this))
     this.setPresetDefinitions(getPresets(this))
@@ -53,23 +54,28 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
   }
 
   async configUpdated(config: Middle8Config): Promise<void> {
-    this.config = config
+    this.config = { ...config }
     await this._initStatus()
   }
 
   async destroy(): Promise<void> {
+    ++this._statusGeneration
     await this._closeStatus()
   }
 
   async _closeStatus() {
     if (this._statusTimer) clearInterval(this._statusTimer)
     this._statusTimer = null
-    if (this._statusReceiver) await this._statusReceiver.close()
+    const receiver = this._statusReceiver
     this._statusReceiver = null
+    if (receiver) await receiver.close()
   }
 
   async _initStatus() {
+    const generation = ++this._statusGeneration
+    const config = { ...this.config }
     await this._closeStatus()
+    if (generation !== this._statusGeneration) return
     this._statusValues.clear()
     this._lastStatus = 0
     this._defineStatus()
@@ -78,15 +84,18 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       ['status_available', false],
     ]))
     this.checkFeedbacks()
-    if (!this.config.status_enabled) {
+    if (!config.status_enabled) {
       this.updateStatus(InstanceStatus.Ok, 'Commands ready; status reception disabled')
       return
     }
     this.updateStatus(InstanceStatus.Connecting, 'Waiting for Middle8 status')
     try {
-      this._statusReceiver = new StatusReceiver(this.config,
-        (records) => this._receiveStatus(records),
+      const endpoint = `${config.status_transport || 'udp'} ${config.status_bind || '0.0.0.0'}:${statusPort(config)}`
+      this.log('info', `Starting feedback listener on ${endpoint}; sender ${config.status_source_host || config.host || '*'}`)
+      const receiver = new StatusReceiver(config,
+        (records) => { if (generation === this._statusGeneration) this._receiveStatus(records) },
         (error, fatal) => {
+          if (generation !== this._statusGeneration) return
           this.log(fatal ? 'error' : 'debug', `Status receiver: ${error.message}`)
           if (fatal) {
             this._statusValues.clear()
@@ -96,12 +105,16 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
               ['status_available', false],
             ]))
             this.checkFeedbacks()
-            this.updateStatus(InstanceStatus.ConnectionFailure, `Status listener: ${error instanceof Error ? error.message : String(error)}`)
+            this.updateStatus(InstanceStatus.ConnectionFailure, `Feedback listener ${endpoint}: ${error.message}`)
           }
         },
-        () => this.log('info', 'Middle8 status listener ready'))
+        () => { if (generation === this._statusGeneration) this.log('info', `Feedback listener ready on ${endpoint}`) })
+      this._statusReceiver = receiver
+      const ready = await receiver.ready
+      if (!ready || generation !== this._statusGeneration) return
       this._statusTimer = setInterval(() => this._expireStatus(), 250)
     } catch (error) {
+      if (generation !== this._statusGeneration) return
       this.updateStatus(InstanceStatus.BadConfig, `Status listener: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -207,14 +220,14 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       {
         type: 'textinput',
         id: 'host',
-        label: 'Middle8 Host/IP',
+        label: 'Middle8 remote Host/IP',
         width: 8,
         default: '127.0.0.1',
       },
       {
         type: 'dropdown',
         id: 'transport',
-        label: 'Protocol',
+        label: 'Command protocol',
         width: 4,
         default: 'udp',
         choices: [
@@ -226,7 +239,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       {
         type: 'number',
         id: 'udpPort',
-        label: 'UDP Port',
+        label: 'Remote UDP command port',
         width: 4,
         default: 9000,
         min: 1,
@@ -235,7 +248,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       {
         type: 'number',
         id: 'tcpPort',
-        label: 'TCP Port',
+        label: 'Remote TCP command port',
         width: 4,
         default: 9001,
         min: 1,
@@ -244,7 +257,7 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
       {
         type: 'number',
         id: 'oscPort',
-        label: 'OSC Port',
+        label: 'Remote OSC command port',
         width: 4,
         default: 9002,
         min: 1,
@@ -272,11 +285,20 @@ export class Middle8Instance extends InstanceBase<Middle8Config> {
         default: true,
       },
       { type: 'checkbox', id: 'status_enabled', label: 'Receive Middle8 status', default: false, width: 12 },
-      { type: 'dropdown', id: 'status_transport', label: 'Status transport', default: 'udp', width: 4,
+      { type: 'dropdown', id: 'status_transport', label: 'Feedback protocol', default: 'udp', width: 4,
         choices: [{ id: 'udp', label: 'UDP (JSON/raw)' }, { id: 'tcp', label: 'TCP (JSON/raw)' },
           { id: 'osc', label: 'OSC over UDP' }] },
-      { type: 'number', id: 'status_port', label: 'Status listen port', default: 9010, min: 1, max: 65535, width: 4 },
-      { type: 'textinput', id: 'status_bind', label: 'Local status listen IP', default: '0.0.0.0', width: 4 },
+      ...(['udp', 'tcp', 'osc'] as const).map((protocol, index): SomeCompanionConfigField => ({
+        type: 'number', id: `status_${protocol}_port`, label: `Local ${protocol.toUpperCase()} feedback port`,
+        default: this.config[`status_${protocol}_port`] ??
+          ((this.config.status_transport || 'udp') === protocol ? this.config.status_port : undefined) ?? (9010 + index),
+        min: 1, max: 65535, width: 4,
+        tooltip: 'A port on the Companion computer. Give each connection its own feedback port and match it in Middle8 Status Output.',
+      })),
+      { type: 'textinput', id: 'status_bind', label: 'Companion local listen IP', default: '0.0.0.0', width: 6,
+        tooltip: 'An IP belonging to the Companion computer, or 0.0.0.0 for all its IPv4 interfaces. Do not enter the remote Middle8 IP.' },
+      { type: 'textinput', id: 'status_source_host', label: 'Feedback sender Host/IP (blank = Middle8 host)', default: '', width: 6,
+        tooltip: 'Only accept status from this Middle8 host. Use * to accept any sender, or specify its status-output interface IP.' },
       { type: 'number', id: 'status_timeout', label: 'Status expiry (seconds; 0 = never)',
         default: 5, min: 0, max: 3600, width: 6,
         tooltip: 'Use 0 for change-only output. Periodic output should arrive faster than this timeout.' }

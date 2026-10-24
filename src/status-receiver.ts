@@ -1,28 +1,42 @@
 import * as dgram from 'dgram'
 import * as net from 'net'
 import { StringDecoder } from 'string_decoder'
+import { lookup } from 'dns/promises'
 import { parseOSC, parseText, type StatusRecords } from './status.js'
 
 export interface StatusConfig {
+  host?: string
   status_enabled?: boolean
   status_transport?: 'udp' | 'tcp' | 'osc'
   status_port?: number
+  status_udp_port?: number
+  status_tcp_port?: number
+  status_osc_port?: number
   status_bind?: string
+  status_source_host?: string
   status_timeout?: number
+}
+
+export function statusPort(config: StatusConfig): number {
+  const protocol = config.status_transport || 'udp'
+  return Number(config[`status_${protocol}_port`] ?? config.status_port ??
+    (protocol === 'tcp' ? 9011 : protocol === 'osc' ? 9012 : 9010))
 }
 
 export class StatusReceiver {
   public socket: net.Server | dgram.Socket
   private clients: Set<net.Socket>
-  private closed: boolean
+  private closed = false
+  public ready: Promise<boolean>
+  private closePromise?: Promise<void>
 
   constructor(config: StatusConfig, onRecords: (records: StatusRecords) => void,
     onError: (error: Error, fatal: boolean) => void, onReady: () => void) {
     this.clients = new Set()
-    this.closed = false
     const transport = config.status_transport || 'udp'
-    const port = Number(config.status_port ?? (transport === 'tcp' ? 9011 : transport === 'osc' ? 9012 : 9010))
-    const host = config.status_bind || '0.0.0.0'
+    const port = statusPort(config)
+    const host = config.status_bind?.trim() || '0.0.0.0'
+    let sourceAddresses: Set<string> | undefined
     const parse = (payload: Buffer | string) => {
       try {
         const records = transport === 'osc' ? parseOSC(Buffer.isBuffer(payload) ? payload : Buffer.from(payload)) : parseText(typeof payload === 'string' ? payload : payload.toString('utf8'))
@@ -33,6 +47,10 @@ export class StatusReceiver {
     }
     if (transport === 'tcp') {
       this.socket = net.createServer((client) => {
+        if (this.closed || (sourceAddresses && !sourceAddresses.has((client.remoteAddress || '').replace(/^::ffff:/, '')))) {
+          client.destroy()
+          return
+        }
         this.clients.add(client)
         const decoder = new StringDecoder('utf8')
         let pending = ''
@@ -52,22 +70,53 @@ export class StatusReceiver {
         client.on('error', (error) => { if (!this.closed) onError(error, false) })
         client.on('close', () => this.clients.delete(client))
       })
-      this.socket.on('error', (error) => { if (!this.closed) onError(error, true) })
-      this.socket.listen(port, host, onReady)
     } else {
       this.socket = dgram.createSocket('udp4')
-      this.socket.on('message', parse)
-      this.socket.on('error', (error) => { if (!this.closed) onError(error, true) })
-      this.socket.bind(port, host, onReady)
+      this.socket.on('message', (packet, peer) => {
+        if (!sourceAddresses || sourceAddresses.has(peer.address)) parse(packet)
+      })
     }
+    let complete: (value: boolean) => void = () => undefined
+    const socket = this.socket
+    this.ready = new Promise<boolean>((resolve) => { complete = resolve })
+    this.socket.on('error', (error) => {
+      complete(false)
+      if (!this.closed) onError(error, true)
+    })
+    // Wait for source-host resolution and bind completion before closing. Closing
+    // an as-yet unbound UDP socket throws and can leave a queued bind alive.
+    void (async () => {
+      try {
+        const source = config.status_source_host?.trim() || config.host?.trim() || ''
+        if (source && source !== '*') {
+          sourceAddresses = new Set(net.isIP(source) === 4 ? [source] :
+            (await lookup(source, { family: 4, all: true })).map((entry) => entry.address))
+        }
+        if (this.closed) { complete(false); return }
+        const onListening = () => {
+          complete(true)
+          if (!this.closed) onReady()
+        }
+        if (socket instanceof dgram.Socket) socket.bind(port, host, onListening)
+        else socket.listen(port, host, onListening)
+      } catch (error) {
+        complete(false)
+        if (!this.closed) onError(error instanceof Error ? error : new Error(String(error)), true)
+      }
+    })()
   }
 
-  async close() {
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
     this.closed = true
     for (const client of this.clients) client.destroy()
-    await new Promise<void>((resolve) => {
-      try { this.socket.close(resolve) } catch (_) { resolve() }
-    })
+    this.closePromise = (async () => {
+      await this.ready
+      await new Promise<void>((resolve) => {
+        try { this.socket.close(() => resolve()) } catch (_) { resolve() }
+      })
+    })()
+    return this.closePromise
   }
 }
 
